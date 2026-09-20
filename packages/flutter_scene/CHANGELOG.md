@@ -1,3 +1,22 @@
+## 0.23.0+miamworld.3
+
+* `readFscenebAsync` parses a `.fsceneb` container on a background isolate, and
+  the registry's asset read (`loadScene`), `loadFscenebBytesAsync` and
+  `loadFscenebAsset` use it. A container's payload chunks are gzipped, so
+  reading one inflates and copies every vertex and image buffer the scene
+  carries; on the UI isolate that is a hard stall. A 1.6 MB pack scene with two
+  2048x2048 rgba8 normal maps cost a single **220-320 ms** main-thread slice on
+  a Galaxy A16 (Impeller GLES) — the largest event of the whole load, and long
+  enough to freeze the loader on screen behind it. It is now off the UI thread
+  entirely: the longest main-thread slice of that load drops to **45-52 ms**,
+  the loader's frame count over the load nearly doubles (16-19 -> 29-34), and
+  its worst frame gap goes from **249-360 ms to 53-72 ms**. Total load time is
+  unchanged (the mip build was always serially behind the parse). Only the
+  stored container crosses into the worker; the parsed document comes back by
+  transfer (`Isolate.exit`), so the inflated payloads are never copied. The
+  synchronous `readFsceneb` and the synchronous realize path are untouched, and
+  on the web `compute` runs inline, so behaviour there is identical.
+
 ## 0.23.0+miamworld.2
 
 * `EnvironmentMap.fromPrefilteredRadianceAtlas` takes a pre-baked
