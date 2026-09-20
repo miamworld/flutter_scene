@@ -291,6 +291,10 @@ export 'src/importer/gltf.dart'
 export 'src/render/env_prefilter.dart'
     show
         kPrefilterBandCount,
+        // The band atlas's own dimensions, so a caller can bake one offline
+        // and hand it to EnvironmentMap.fromPrefilteredRadianceAtlas.
+        kPrefilterBandHeight,
+        kPrefilterBandWidth,
         prefilterEquirectRadiance,
         prefilterEquirectRadianceToCube;
 export 'src/texture/ktx2/ktx2.dart' show Ktx2FormatException;

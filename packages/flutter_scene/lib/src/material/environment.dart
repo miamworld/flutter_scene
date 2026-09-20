@@ -237,6 +237,63 @@ base class EnvironmentMap {
     );
   }
 
+  /// Wraps a pre-baked prefiltered-radiance band atlas that is still on the
+  /// CPU: [halfFloatTexels] is `width * height` linear RGBA half-float texels,
+  /// row-major, roughness band `b` occupying rows
+  /// `[b * kPrefilterBandHeight, (b + 1) * kPrefilterBandHeight)` — the layout
+  /// [prefilterEquirectRadiance] produces on a backend that cannot render to a
+  /// mip level, and the one [decodeKtx2RadianceAtlas] resamples a cubemap
+  /// onto.
+  ///
+  /// This is [fromKtx2Bytes] with the resample already done offline. That
+  /// resample is ~460 ms of isolate work on a low-end Android device, paid on
+  /// every backend without cube radiance, and it is fully deterministic — so
+  /// an app that ships a pre-baked environment can ship this layout instead
+  /// and pay only the upload. Uploading it needs `gpuContext.createTexture`,
+  /// which is not part of the package's public surface, hence this factory.
+  ///
+  /// [diffuseSphericalHarmonics] carries the diffuse term
+  /// ([kDiffuseShCoefficientCount] RGB coefficients with the Lambertian
+  /// convolution and `1/pi` already folded in, as
+  /// [computeDiffuseSphericalHarmonics] returns them); the term is zero when
+  /// it is omitted.
+  ///
+  /// Throws [ArgumentError] when the texel count does not match the given
+  /// dimensions, or when the atlas is not [kPrefilterBandCount] bands tall.
+  /// {@category Lighting and environment}
+  factory EnvironmentMap.fromPrefilteredRadianceAtlas({
+    required Uint16List halfFloatTexels,
+    required int width,
+    required int height,
+    List<Vector3>? diffuseSphericalHarmonics,
+  }) {
+    if (halfFloatTexels.length != width * height * 4) {
+      throw ArgumentError(
+        'A ${width}x$height RGBA atlas needs ${width * height * 4} half-float '
+        'texels, got ${halfFloatTexels.length}',
+      );
+    }
+    if (height != kPrefilterBandHeight * kPrefilterBandCount) {
+      throw ArgumentError(
+        'A prefiltered radiance atlas is $kPrefilterBandCount bands of '
+        '$kPrefilterBandHeight rows '
+        '(${kPrefilterBandHeight * kPrefilterBandCount}), got $height',
+      );
+    }
+    final texture = gpu.gpuContext.createTexture(
+      gpu.StorageMode.hostVisible,
+      width,
+      height,
+      format: gpu.PixelFormat.r16g16b16a16Float,
+      enableRenderTargetUsage: false,
+    );
+    texture.overwrite(ByteData.sublistView(halfFloatTexels));
+    return EnvironmentMap._(
+      texture,
+      diffuseSphericalHarmonics ?? _zeroSphericalHarmonics(),
+    );
+  }
+
   /// Loads an [EnvironmentMap] from a pre-baked KTX2 radiance cubemap, the
   /// output of an offline image-based-lighting bake (the Khronos glTF IBL
   /// sampler, or [prefilterEquirectRadianceToCube] run in tooling).
