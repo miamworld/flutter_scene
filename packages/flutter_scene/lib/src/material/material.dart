@@ -168,6 +168,19 @@ abstract class Material {
     return _defaultEnvironmentMap ??= EnvironmentMap.studio();
   }
 
+  /// Whether the default environment has already been built, so handing it out
+  /// costs nothing.
+  @internal
+  static bool get hasDefaultEnvironmentMap => _defaultEnvironmentMap != null;
+
+  static EnvironmentMap? _unsampledEnvironmentMap;
+
+  /// The environment `Scene` binds for a frame that samples none (see
+  /// [EnvironmentMap.unsampled]), built once and memoized.
+  @internal
+  static EnvironmentMap getUnsampledEnvironmentMap() =>
+      _unsampledEnvironmentMap ??= EnvironmentMap.unsampled();
+
   /// Builds the BRDF lookup texture and loads the physical shader variants.
   ///
   /// Called by the [Scene] constructor; rendering is gated on the returned
@@ -345,6 +358,16 @@ abstract class Material {
       _radianceCubeFragmentShader ??= _radianceCubeFragmentShaderName == null
       ? null
       : baseShaderLibrary[_radianceCubeFragmentShaderName!];
+
+  /// Whether drawing this material reads the [Scene]-wide environment (its
+  /// prefiltered radiance or its diffuse spherical harmonics).
+  ///
+  /// `Scene` skips building the default environment for a frame whose
+  /// materials all answer false, so the answer must be conservative: the base
+  /// implementation is `true`, and only a material that is known not to sample
+  /// it (an unlit one, or one carrying its own environment) overrides it.
+  @internal
+  bool get usesSceneEnvironment => true;
 
   /// Whether this material draws with its cubemap-radiance variant for
   /// [lighting], which is also what decides the radiance texture bound to it.

@@ -34,6 +34,10 @@ class UnlitMaterial extends Material {
     setFragmentShaderName('UnlitFragment');
   }
 
+  /// Unlit shading never samples the environment.
+  @override
+  bool get usesSceneEnvironment => false;
+
   /// The raw slot source, for serialization (same value as [baseColorTexture]).
   @internal
   TextureSource? get baseColorTextureSource => baseColorTexture;
