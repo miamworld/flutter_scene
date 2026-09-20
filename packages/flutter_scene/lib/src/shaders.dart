@@ -40,6 +40,16 @@ gpu.ShaderLibrary get baseShaderLibrary {
 /// Resolves the asset key the base shader bundle shipped under: the data asset
 /// when the toolchain registered one, then the app's own generated tree, then
 /// flutter_scene's, which its own hook always fills.
+///
+/// Costs one `AssetManifest` load, which `rootBundle` then caches for the two
+/// other resolvers that need it (`loadGeneratedAssetIndex` and
+/// `resolvePhysicalBundleKeys`). On a Galaxy A16 this showed up as 241 ms in a
+/// profile of a cold start, but that was the isolate being held by the
+/// (then-unprecomputed) BRDF integration: the trace has this future and the
+/// SMAA table load both completing within 2 ms of that 237 ms synchronous
+/// block releasing the isolate, so the real cost is ~4 ms. Probing the
+/// data-asset key with `rootBundle.load` to skip the manifest would replace
+/// those 4 ms with a 2.25 MB asset read that the engine then repeats.
 @visibleForTesting
 Future<String?> resolveBaseShaderBundleKey({AssetBundle? bundle}) async {
   try {
