@@ -265,6 +265,16 @@ class PreprocessedMaterial extends Material implements HotReloadableFmat {
   /// The engine shading model used by this material.
   FmatShadingModel get shadingModel => _shadingModel;
 
+  /// A lit (or physical) fmat material samples the scene environment unless it
+  /// carries its own; the shadow catcher reads the frame's environment for its
+  /// fragment info whatever [environment] says; unlit shading reads none.
+  @override
+  bool get usesSceneEnvironment => switch (_shadingModel) {
+    FmatShadingModel.unlit => false,
+    FmatShadingModel.shadowCatcher => true,
+    FmatShadingModel.lit || FmatShadingModel.physical => environment == null,
+  };
+
   FmatShadingModel _shadingModel;
   FmatBlending _blending;
   FmatCulling _culling;

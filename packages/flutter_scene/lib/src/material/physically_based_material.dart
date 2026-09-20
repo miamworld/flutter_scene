@@ -414,6 +414,9 @@ class PhysicallyBasedMaterial extends Material {
   /// scene-wide `Scene.environment` when set.
   EnvironmentMap? environment;
 
+  @override
+  bool get usesSceneEnvironment => environment == null;
+
   /// How the material's alpha is interpreted; see [AlphaMode].
   ///
   /// [AlphaMode.blend] always routes the material through the
