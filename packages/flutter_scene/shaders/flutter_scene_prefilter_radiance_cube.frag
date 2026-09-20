@@ -43,22 +43,17 @@ out vec4 frag_color;
 
 const int kPrefilterSamples = 256;
 
-// Van der Corput radical inverse in base 2, float ops only (no integer bit ops,
-// which aren't reliable across the GLSL dialects Impeller targets).
-float RadicalInverseVdC(float i) {
-  float result = 0.0;
-  float f = 0.5;
-  float x = i;
-  for (int k = 0; k < 20; k++) {
-    result += mod(x, 2.0) * f;
-    x = floor(x * 0.5);
-    f *= 0.5;
-  }
-  return result;
-}
+// The i'th point of a rank-1 lattice: stratified in x, and in y the
+// golden-ratio (Kronecker) sequence, whose discrepancy matches the Hammersley
+// set this replaces. Two multiplies instead of the 20-iteration float
+// emulation of a base-2 radical inverse that the bit operations missing from
+// Impeller's GLSL dialects would otherwise need -- a loop that cost more than
+// the texture fetch it fed.
+const float kGoldenRatioConjugate = 0.6180339887498949;
 
-vec2 Hammersley(int i, int n) {
-  return vec2(float(i) / float(n), RadicalInverseVdC(float(i)));
+vec2 LatticePoint(int i, int n) {
+  return vec2(float(i) / float(n),
+              fract(0.5 + float(i) * kGoldenRatioConjugate));
 }
 
 vec3 ImportanceSampleGGX(vec2 xi, vec3 n, float roughness) {
@@ -129,12 +124,18 @@ void main() {
   // center and nothing is clamped (the mirror band stays sharp).
   const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
   vec3 center = SampleSourceRadianceLod(n, 0.0);
+  // The mirror band is the source itself: at roughness 0 the GGX lobe is a
+  // delta, so every one of the samples below would read exactly the center.
+  if (roughness <= 0.0) {
+    frag_color = vec4(center, 1.0);
+    return;
+  }
   float max_luma = max(dot(center, kLuma), 1.0) * 8.0;
 
   vec3 color = vec3(0.0);
   float total_weight = 0.0;
   for (int i = 0; i < kPrefilterSamples; i++) {
-    vec2 xi = Hammersley(i, kPrefilterSamples);
+    vec2 xi = LatticePoint(i, kPrefilterSamples);
     xi.x = fract(xi.x + jitter);
     vec3 h = ImportanceSampleGGX(xi, n, roughness);
     vec3 l = normalize(2.0 * dot(v, h) * h - v);
