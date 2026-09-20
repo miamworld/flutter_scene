@@ -1,3 +1,44 @@
+## 0.23.0+miamworld.1
+
+Miamworld's patch set on top of 0.23.0, measured on a Galaxy A16 (SM-A165F,
+Mali-G57, Android 16, Impeller **OpenGLES**, UI and platform task runners
+merged). Cold start of a 3D page: time to a steady animating scene 3.15 s ->
+~1.06 s, no display stall over 143 ms (two ~880 ms freezes before), longest
+main-thread slice 871 ms -> under 100 ms.
+
+* The radiance prefilter fills its roughness bands one per frame
+  (`prefilterEquirectRadianceProgressive`) instead of submitting the whole
+  512x2048 fp16, 256-sample GGX pass at once. That single draw is ~850 ms of
+  GPU time on a Mali-G57 and, flushed inside a Flutter frame, froze the
+  display until the vendor's ~880 ms `QUEUE_BUFFER_TIMEOUT`.
+* `Scene.warmUp` rendezvouses with the raster thread (`src/gpu/raster_sync.dart`,
+  `awaitRasterThread` / `awaitFrame`) before its pipeline-compiling draws, so
+  the engine's blocking `RenderPass::GetOrCreatePipeline` round-trip does not
+  land on a busy raster thread. First `RenderPass.draw` 871 ms -> 34-44 ms.
+* The GGX prefilter shaders replace the 20-iteration `RadicalInverseVdC`
+  emulation with a rank-1 lattice and take the mirror band (roughness 0)
+  directly. Per-band GPU cost ~100 ms -> ~65 ms; total ~610 ms -> ~320 ms.
+* `measureMipSampling` waits for the raster thread before reading its target
+  back and takes a second reading before believing the defect. One cold run in
+  three used to report base-mip clamping on a device that samples mip chains
+  correctly, silently dropping every mip chain in the app.
+* The 64x64 split-sum environment-BRDF (DFG) table ships precomputed as
+  `assets/dfg.bin`; it was integrated on the calling isolate at every cold
+  start (237 ms of UI-thread Dart). `Scene.initializeStaticResources`
+  274 ms -> 17-20 ms.
+* The default `EnvironmentMap.studio()` is built only when something on the
+  frame samples the scene environment (`Material.usesSceneEnvironment`,
+  `EnvironmentMap.unsampled()`), instead of on the first frame of every scene.
+* The 4.4 MB physical material shader bundle and the SMAA area/search tables
+  load on demand instead of gating the first frame of every scene.
+* The CPU mip build hoists its per-content switch out of the per-texel loop,
+  unrolls the normal taps and table-drives the sRGB decode: one 2048x2048
+  chain 51 -> 23 ms (normal), 141 -> 55 ms (color).
+
+Tests added: `test/dfg_lut_asset_test.dart`,
+`test/mipmap_downsample_parity_test.dart`,
+`test/material_uses_scene_environment_test.dart`.
+
 ## 0.23.0
 
 * Build hooks no longer crash on a target OS `package:code_assets` cannot name, which is how a third-party embedder announces tvOS or visionOS.
