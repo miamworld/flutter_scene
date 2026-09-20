@@ -9,8 +9,10 @@ import 'package:flutter_scene/src/hot_reload/hot_reload_coordinator.dart';
 import 'package:flutter_scene/src/render/frame_transients.dart';
 import 'package:flutter_scene/src/render/mip_sampling_probe.dart';
 import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
+import 'package:flutter_scene/src/gpu/raster_sync.dart';
 import 'package:vector_math/vector_math.dart'
     show Frustum, Matrix3, Matrix4, Plane, Ray, Vector2, Vector3, Vector4;
+
 import 'ambient_occlusion.dart';
 import 'global_illumination.dart';
 import 'audio/audio_engine.dart';
@@ -1418,6 +1420,23 @@ base class Scene implements SceneGraph {
     if (views.isEmpty) {
       return;
     }
+    // Rendezvous with the raster thread before drawing anything.
+    //
+    // The warm-up frame's first draw is what compiles a pipeline, and on the
+    // OpenGL ES backend the engine builds a pipeline by posting a task to the
+    // raster thread and *blocking* the calling (UI) thread on its result --
+    // see `flutter::gpu::RenderPass::GetOrCreatePipeline` in
+    // `flutter/lib/gpu/render_pass.cc`, whose own comment warns it "could hang
+    // the UI thread long enough to miss a frame". If the raster thread is
+    // inside `eglSwapBuffers` waiting for the display to release a buffer, the
+    // UI thread inherits that whole wait: on a Mali/BLAST device that is
+    // hundreds of milliseconds, and it is spent with Dart frozen.
+    //
+    // Waiting for the raster thread here costs the same wall clock but does
+    // not block Dart: the completion callback of an empty command buffer only
+    // runs once the raster thread has drained its queue, so the draws below
+    // find it idle and the pipeline round-trips return immediately.
+    await awaitRasterThread();
     // Advance a zero step so the warm-up frame does not move the scene's clock
     // forward before the first real frame (render then skips its implicit
     // wall-clock tick).
