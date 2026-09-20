@@ -1439,6 +1439,52 @@ base class Scene implements SceneGraph {
 
   bool _warmUpIncludeOffscreen = false;
 
+  /// The environment this frame's draws read: the explicit [environment], the
+  /// built-in default, or a placeholder when nothing on the frame reads one.
+  ///
+  /// Building the default is not cheap (a procedural equirect, a
+  /// spherical-harmonic projection, and a prefilter that encodes 48 render
+  /// passes into a radiance cube), and a scene whose materials are all unlit or
+  /// carry their own environment never samples it. The scan stops mattering
+  /// after the first frame that needs it: from then on the default is built and
+  /// handed out directly.
+  EnvironmentMap _resolveFrameEnvironment() {
+    final explicit = environment;
+    if (explicit != null) return explicit;
+    if (Material.hasDefaultEnvironmentMap || _frameSamplesEnvironment()) {
+      return Material.getDefaultEnvironmentMap();
+    }
+    return Material.getUnsampledEnvironmentMap();
+  }
+
+  /// Whether anything about to be drawn (or captured) this frame reads the
+  /// scene-wide environment. Conservative: every answer here defaults to yes,
+  /// and a material only opts out through [Material.usesSceneEnvironment].
+  bool _frameSamplesEnvironment() {
+    if (skybox != null ||
+        skyEnvironment != null ||
+        baseEnvironment != null ||
+        _crossfadeEnvironment != null ||
+        environmentVolumes.isNotEmpty ||
+        globalIllumination.enabled ||
+        renderScene.environmentVolumeComponents.isNotEmpty ||
+        renderScene.reflectionProbeComponents.isNotEmpty ||
+        renderScene.planarReflectorComponents.isNotEmpty ||
+        renderScene.irradianceVolumeComponents.isNotEmpty) {
+      return true;
+    }
+    for (final item in renderScene.items) {
+      if (item.material.usesSceneEnvironment) return true;
+      final lod = item.lod;
+      if (lod != null) {
+        for (final level in lod.levels) {
+          if (level.material.usesSceneEnvironment) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /// Renders a list of [views] of this scene onto [canvas].
   ///
   /// Each [RenderView] binds a camera to a normalized sub-rectangle of
@@ -1458,6 +1504,7 @@ base class Scene implements SceneGraph {
   ///
   /// The scene is advanced once per call (a single per-frame tick), then
   /// every view is rendered from that shared scene state.
+
   void renderViews(
     List<RenderView> views,
     ui.Canvas canvas, {
@@ -1540,7 +1587,7 @@ base class Scene implements SceneGraph {
     // render passes. Doing this in the constructor instead would break the
     // OpenGL ES backend, which sets up its context lazily on the raster
     // thread only after the first frame.
-    final environmentMap = environment ?? Material.getDefaultEnvironmentMap();
+    final environmentMap = _resolveFrameEnvironment();
 
     // Advance the per-frame transient arenas (uniform blocks and
     // instance-rate vertex data): recycle blocks whose GPU work completed

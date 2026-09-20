@@ -93,6 +93,31 @@ base class EnvironmentMap {
     );
   }
 
+  /// A black environment for a frame that samples no environment at all.
+  ///
+  /// `Scene` binds this instead of building the default [studio] one when
+  /// nothing on the frame reads the environment (no skybox, no lit material,
+  /// no global illumination): it costs one tiny texture instead of a 256x128
+  /// procedural equirect, a spherical-harmonic projection and a 48-pass
+  /// radiance prefilter. Its radiance carries the same *layout* the default
+  /// would have, so the shader variants a material picks do not change.
+  @internal
+  factory EnvironmentMap.unsampled() {
+    return EnvironmentMap._(
+      effectiveMipRadianceLayout
+          ? gpu.gpuContext.createTexture(
+              gpu.StorageMode.devicePrivate,
+              4,
+              4,
+              format: gpu.PixelFormat.r16g16b16a16Float,
+              textureType: gpu.TextureType.textureCube,
+              enableShaderReadUsage: true,
+            )
+          : Material.getBlackPlaceholderTexture(),
+      _zeroSphericalHarmonics(),
+    );
+  }
+
   /// A black reflection environment with uniform diffuse [ambientRadiance].
   ///
   /// The color is the linear RGB radiance a white Lambertian surface receives
