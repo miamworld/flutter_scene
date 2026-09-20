@@ -26,6 +26,8 @@ import 'god_rays.dart';
 import 'light.dart';
 import 'material/environment.dart';
 import 'material/material.dart';
+import 'material/physical_material_variant.dart'
+    show physicalMaterialResourcesPending;
 import 'mesh.dart';
 import 'node.dart';
 import 'raycast.dart';
@@ -177,8 +179,14 @@ base class Scene implements SceneGraph {
   /// direct [render] call is skipped, until it is `true`. Await
   /// [initializeStaticResources] (or use a `SceneView` with a `loadingBuilder`)
   /// to react to it.
+  ///
+  /// Also false while a lazily loaded resource a live material needs is still
+  /// on its way: the physical material bundle, requested by the first material
+  /// that takes the physical path. A scene whose materials never do never
+  /// waits for it.
   /// {@category Assets and loading}
-  static bool get isReadyToRender => _readyToRender;
+  static bool get isReadyToRender =>
+      _readyToRender && !physicalMaterialResourcesPending;
 
   /// Computes the linear exposure multiplier for a physical pinhole
   /// camera, the way photographers reason about it: [aperture] (f-stops),
@@ -226,6 +234,9 @@ base class Scene implements SceneGraph {
   /// [isAntiAliasingModeSupported].
   set antiAliasingMode(AntiAliasingMode value) {
     _antiAliasingMode = value;
+    if (_resolveAntiAliasingMode(value) == AntiAliasingMode.smaa) {
+      SmaaPass.request();
+    }
     final supported = value != AntiAliasingMode.msaa || _offscreenMsaaSupported;
     if (!supported && !_warnedUnsupportedAntiAliasing) {
       _warnedUnsupportedAntiAliasing = true;
@@ -394,7 +405,12 @@ base class Scene implements SceneGraph {
         Future.wait([
               loadBaseShaderLibrary(),
               Material.initializeStaticResources(),
-              SmaaPass.initializeStaticResources(),
+              // The SMAA tables (362 KB, expanded to RGBA8 and uploaded on
+              // the CPU) and the physical material bundle (4.4 MB) are not
+              // here: both are requested by the first frame / material that
+              // needs them (see SmaaPass.request and
+              // initializePhysicalMaterialResources), so a scene using
+              // neither does not pay for them to show its first frame.
             ])
             // Needs the shader library, so it runs after the load and before
             // rendering unblocks (environment radiance builds consult it).
@@ -1448,7 +1464,7 @@ base class Scene implements SceneGraph {
     ui.Rect? region,
     double? pixelRatio,
   }) {
-    if (!_readyToRender) {
+    if (!isReadyToRender) {
       debugPrint('Flutter Scene is not ready to render. Skipping frame.');
       debugPrint(
         'You may wait on the Future returned by Scene.initializeStaticResources() before rendering.',
@@ -1977,6 +1993,9 @@ base class Scene implements SceneGraph {
         : _resolveAntiAliasingMode(view.antiAliasingMode ?? _antiAliasingMode);
     final enableMsaa = effectiveAa == AntiAliasingMode.msaa;
     final enableFxaa = effectiveAa == AntiAliasingMode.fxaa;
+    if (effectiveAa == AntiAliasingMode.smaa) {
+      SmaaPass.request();
+    }
     final enableSmaa =
         effectiveAa == AntiAliasingMode.smaa && SmaaPass.isInitialized;
 
