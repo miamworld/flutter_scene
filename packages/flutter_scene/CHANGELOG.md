@@ -1,3 +1,22 @@
+## 0.23.0+miamworld.2
+
+* `EnvironmentMap.fromPrefilteredRadianceAtlas` takes a pre-baked
+  prefiltered-radiance band atlas that is still on the CPU (half-float RGBA
+  texels plus its dimensions and the diffuse SH) and uploads it.
+  `fromKtx2Bytes` reads a radiance *cubemap*, so on a backend that samples the
+  legacy band atlas instead — Impeller GLES, where
+  `doesSupportFramebufferRenderMipmap()` is false — it first resamples the cube
+  onto that atlas on an isolate: 453-470 ms on a Galaxy A16, on every cold
+  start, for a result that never changes. Baking that resample offline and
+  handing the texels straight over takes the same environment from 466 ms to
+  44 ms (39 ms of asset read, 4.7 ms of upload), with the rendered image
+  bit-identical. Uploading it needs `gpuContext.createTexture`, which is not
+  public, which is why this is a factory rather than something an app can do
+  for itself.
+* `kPrefilterBandWidth` and `kPrefilterBandHeight` are exported alongside
+  `kPrefilterBandCount`, so a tool can bake the atlas layout without
+  hard-coding its dimensions.
+
 ## 0.23.0+miamworld.1
 
 Miamworld's patch set on top of 0.23.0, measured on a Galaxy A16 (SM-A165F,
