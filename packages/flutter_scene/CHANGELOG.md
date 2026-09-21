@@ -1,3 +1,29 @@
+## 0.23.0+miamworld.4
+
+* `Texture2D.fromImage` wraps a decoded image's own GPU texture
+  (`gpu.Texture.fromImage`) when the texture needs no mip chain, instead of
+  reading the pixels back with `toByteData` and uploading them again. On the
+  backends that queue GPU work from the calling thread (Vulkan, Metal) both
+  halves were paid on the thread that draws. Over one pack-opening load
+  (thirteen such textures, Galaxy A16, Impeller **Vulkan**): **740-820 ms of
+  `toByteData` and 134-154 ms of synchronous upload became 1.2 ms of wrapping**,
+  and the screen's asset load went from 789-815 ms to 711-731 ms. The readback
+  path stays for mipped textures and for images the backend will not hand over.
+* `uploadMipLevels` copies a whole mip chain through one staging buffer and one
+  command buffer (`CommandBuffer.copyBufferToTexture`, which Flutter GPU batches
+  into a single blit pass) and submits once, instead of calling
+  `gpu.Texture.overwrite` per level — eleven staging buffers, blit passes,
+  command buffers and submissions for one 2048-square chain. Measured 18.4 ->
+  15.4 ms per chain on Vulkan, and twenty command pools and descriptor pools
+  fewer over a load. The web shim has no such command and keeps uploading level
+  by level behind a conditional import.
+* `PunctualLightBuffer` uploads its parameters and index textures only when
+  their contents change, instead of every frame. Each upload is a staging
+  buffer, a blit pass and a submission on the calling thread — up to 5.2 ms in
+  one traced frame on Vulkan, for 5 KB of unchanged floats.
+* Carries `fix: keep the dead radiance block out of unlit .fmat shaders` (cut as
+  `0.23.0+miamworld.xiaomi`), which this tag is based on.
+
 ## 0.23.0+miamworld.3
 
 * `readFscenebAsync` parses a `.fsceneb` container on a background isolate, and
