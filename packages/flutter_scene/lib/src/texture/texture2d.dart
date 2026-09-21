@@ -174,11 +174,29 @@ class Texture2D implements TextureSource {
   }) => Texture2D._(texture, sampling.toSamplerOptions());
 
   /// Builds a texture from a decoded [image].
+  /// A texture that needs no mip chain of its own wraps the image's GPU
+  /// texture directly ([gpu.Texture.fromImage]): the pixels are already where
+  /// the sampler wants them, so no byte readback and no upload are needed. The
+  /// wrapper shares the image's storage and keeps it alive, so the caller may
+  /// dispose the image as soon as this returns. Everything else — a mip chain,
+  /// or a backend that cannot hand the image over (the web, a deferred
+  /// `toImageSync` image) — reads the pixels back and uploads them as before.
   static Future<Texture2D> fromImage(
     ui.Image image, {
     TextureContent content = TextureContent.color,
     TextureSampling sampling = const TextureSampling(),
   }) async {
+    if (!(sampling.mipmaps && mipChainsAreSampled)) {
+      gpu.Texture? wrapped;
+      try {
+        wrapped = gpu.Texture.fromImage(gpu.gpuContext, image);
+      } on Object {
+        wrapped = null;
+      }
+      if (wrapped != null) {
+        return Texture2D._(wrapped, sampling.toSamplerOptions());
+      }
+    }
     final bytes = await image.toByteData(
       format: ui.ImageByteFormat.rawStraightRgba,
     );
