@@ -1,3 +1,22 @@
+## 0.23.0+miamworld.5
+
+* `Skin` hands the renderer a joints texture whose upload the GPU has been
+  observed to finish, instead of rotating through a fixed three-slot ring.
+  On Impeller Vulkan a skinned mesh could be drawn for one frame with a
+  skeleton from several frames earlier, or with a half-copied mixture of two
+  skeletons -- a strip of the mesh offset from the rest, or a joint matrix of
+  garbage floats stretching a quad across the screen. `Texture.overwrite`
+  uploads through a blit pass whose closing barrier
+  (`BlitPassVK::OnCopyBufferToTextureCommand`) has `dst_stage =
+  eFragmentShader`, and the joints texture is read by the **vertex** shader,
+  so on a tile-based GPU the draw can sample it before or during its own
+  upload. Measured on a Galaxy A16 (Mali-G57), panning three skinned models:
+  **17.8 -> 1.83 glitch frames per 1000**, with the strict out-of-band
+  deformation detector at 0 in 4372 frames (Impeller GLES, unaffected, is 0 in
+  3021). Steady-state frame rate is unchanged. The cost is that a frame draws
+  with a skeleton one to two frames old; the real fix is for that barrier to
+  cover every shader stage that can sample a texture.
+
 ## 0.23.0+miamworld.4
 
 * `Texture2D.fromImage` wraps a decoded image's own GPU texture
