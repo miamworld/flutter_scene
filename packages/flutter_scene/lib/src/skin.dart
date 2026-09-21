@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_scene/src/node.dart';
+import 'package:flutter_scene/src/render/frame_transients.dart';
 import 'package:vector_math/vector_math.dart';
 import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 
@@ -59,18 +60,38 @@ base class Skin {
   /// `joints[i]`.
   final List<Matrix4> inverseBindMatrices = [];
 
-  /// Ring of joints textures reused across frames by [getJointsTexture].
+  /// Pool of joints textures, recycled once the GPU is known to be done
+  /// with them.
   ///
-  /// Each frame writes the next slot so the GPU is never handed a texture
-  /// it may still be sampling from a recent frame. The ring is allocated
-  /// lazily and dropped if the joint count (and therefore the texture
-  /// size) ever changes.
-  static const int _jointsTextureRingSize = 3;
-  final List<gpu.Texture?> _jointsTextureRing = List<gpu.Texture?>.filled(
-    _jointsTextureRingSize,
-    null,
-  );
-  int _jointsTextureRingCursor = 0;
+  /// A joints texture is uploaded with `Texture.overwrite`, which submits a
+  /// buffer-to-image copy in its own command buffer, and is then read by the
+  /// **vertex** stage of the draws that follow. Impeller's Vulkan backend
+  /// makes that copy visible to the fragment stage only --
+  /// `BlitPassVK::OnCopyBufferToTextureCommand` ends the copy with a barrier
+  /// whose `dst_stage` is `eFragmentShader`, and `RenderPassVK::BindResource`
+  /// adds no barrier of its own for a sampled texture -- so a vertex shader
+  /// may read the texture before, or while, the copy executes. On a
+  /// tile-based GPU that shows up as a skinned mesh drawn with a stale or
+  /// half-written skeleton: a strip of it offset from the rest, or the whole
+  /// mesh flung across the screen.
+  ///
+  /// Neither a deeper ring nor a fresh texture per frame fixes that (both
+  /// make the stale content *older*, so the artifact gets worse). The only
+  /// thing that does is to sample a texture whose upload is known to have
+  /// finished, so this pool hands out the newest slot whose upload has been
+  /// observed complete through [rendererSubmissions], and writes into a slot
+  /// that is neither pending nor still readable by work in flight. The cost
+  /// is that the skeleton a frame draws with is one to two frames old.
+  static const int _maxJointsTextures = 4;
+  final List<_JointsSlot> _jointsSlots = [];
+
+  /// Slots in upload order; the last one holds this frame's matrices.
+  final List<_JointsSlot> _jointsUploads = [];
+
+  /// The slot handed to the renderer for the current frame, and the one
+  /// before it (for [getPreviousJointsTexture]).
+  _JointsSlot? _currentSlot;
+  _JointsSlot? _previousSlot;
   int _jointsTextureDimension = 0;
 
   /// Computes the joint matrices for the current frame and uploads them as
@@ -80,30 +101,85 @@ base class Skin {
   /// length is rounded up to the next power of two, with a floor of four so
   /// a matrix never straddles a row; unused slots are initialized to identity.
   ///
+  /// The returned texture is the most recent one whose upload the GPU has
+  /// finished (see [_maxJointsTextures]); before any upload has been
+  /// observed complete -- the first frames of a scene -- the texture just
+  /// written is returned.
+  ///
   /// The companion [getTextureWidth] returns the same edge length so the
   /// vertex shader can index into the texture.
   gpu.Texture getJointsTexture() {
     final int dimensionSize = _jointsTextureEdge(joints.length);
 
-    // Drop the ring if the texture size changed (joint count is fixed
+    // Drop the pool if the texture size changed (joint count is fixed
     // after construction, so this normally never triggers).
     if (dimensionSize != _jointsTextureDimension) {
-      _jointsTextureRing.fillRange(0, _jointsTextureRing.length, null);
+      _jointsSlots.clear();
+      _jointsUploads.clear();
+      _currentSlot = null;
+      _previousSlot = null;
       _jointsTextureDimension = dimensionSize;
     }
 
-    // Advance to the next ring slot, allocating it on first use.
-    _jointsTextureRingCursor =
-        (_jointsTextureRingCursor + 1) % _jointsTextureRingSize;
-    final gpu.Texture texture = _jointsTextureRing[_jointsTextureRingCursor] ??=
-        gpu.gpuContext.createTexture(
-          gpu.StorageMode.hostVisible,
-          dimensionSize,
-          dimensionSize,
-          format: gpu.PixelFormat.r32g32b32a32Float,
-        );
+    // Everything submitted since the last call may have read the slot handed
+    // out then, so that is the watermark its contents must outlive.
+    _currentSlot?.readStamp = rendererSubmissions.latestSubmission;
+    final int completed = rendererSubmissions.completedThrough;
+
+    final _JointsSlot? target = _acquireJointsSlot(completed, dimensionSize);
+    if (target != null) {
+      target.texture.overwrite(_packJointMatrices(dimensionSize));
+      // `Texture.overwrite` submits its own command buffer, untracked; the
+      // next submission the renderer records comes after it, so that
+      // submission completing implies this copy has landed.
+      target.uploadStamp = rendererSubmissions.latestSubmission + 1;
+      _jointsUploads
+        ..remove(target)
+        ..add(target);
+    }
+
+    // The newest slot whose upload the GPU has finished. Falling back to the
+    // freshest upload only happens before any completion has been observed.
+    _JointsSlot? ready;
+    for (final slot in _jointsUploads) {
+      if (slot.uploadStamp <= completed) ready = slot;
+    }
+    final _JointsSlot result = ready ?? _jointsUploads.last;
+    if (!identical(result, _currentSlot)) {
+      _previousSlot = _currentSlot;
+      _currentSlot = result;
+    }
+    return result.texture;
+  }
+
+  /// A slot safe to write this frame: not the one being drawn with, with no
+  /// upload still pending and no submission that may still read it in
+  /// flight. Returns null when every slot is busy (the frame then re-uses
+  /// the matrices it already uploaded).
+  _JointsSlot? _acquireJointsSlot(int completed, int dimensionSize) {
+    for (final slot in _jointsSlots) {
+      if (identical(slot, _currentSlot)) continue;
+      if (slot.uploadStamp > completed) continue;
+      if (slot.readStamp > completed) continue;
+      return slot;
+    }
+    if (_jointsSlots.length >= _maxJointsTextures) return null;
+    final slot = _JointsSlot(
+      gpu.gpuContext.createTexture(
+        gpu.StorageMode.hostVisible,
+        dimensionSize,
+        dimensionSize,
+        format: gpu.PixelFormat.r32g32b32a32Float,
+      ),
+    );
+    _jointsSlots.add(slot);
+    return slot;
+  }
+
+  /// This frame's joint matrices, laid out four texels per joint.
+  ByteData _packJointMatrices(int dimensionSize) {
     // 64 bytes per matrix. 4 bytes per pixel.
-    Float32List jointMatrixFloats = Float32List(
+    final Float32List jointMatrixFloats = Float32List(
       dimensionSize * dimensionSize * 4,
     );
     // Initialize with identity matrices.
@@ -137,22 +213,29 @@ base class Skin {
       final floatOffset = jointIndex * 16;
       jointMatrixFloats.setRange(floatOffset, floatOffset + 16, matrix.storage);
     }
-
-    texture.overwrite(jointMatrixFloats.buffer.asByteData());
-    return texture;
+    return jointMatrixFloats.buffer.asByteData();
   }
 
   /// The edge length, in texels, of the joints texture produced by
   /// [getJointsTexture].
   int getTextureWidth() => _jointsTextureEdge(joints.length);
 
-  /// The previous frame's joints texture from the ring, or the current texture
-  /// on the first frame.
-  gpu.Texture getPreviousJointsTexture() {
-    final prevSlot =
-        (_jointsTextureRingCursor - 1 + _jointsTextureRingSize) %
-        _jointsTextureRingSize;
-    return _jointsTextureRing[prevSlot] ??
-        _jointsTextureRing[_jointsTextureRingCursor]!;
-  }
+  /// The previous frame's joints texture, or the current one on the first
+  /// frame.
+  gpu.Texture getPreviousJointsTexture() =>
+      (_previousSlot ?? _currentSlot ?? _jointsUploads.last).texture;
+}
+
+/// One pooled joints texture and the submission watermarks that say when it
+/// is safe to write to, and when its contents are on the GPU.
+class _JointsSlot {
+  _JointsSlot(this.texture);
+
+  final gpu.Texture texture;
+
+  /// The submission whose completion implies this slot's upload landed.
+  int uploadStamp = 0;
+
+  /// The highest submission that may still read this slot as a draw source.
+  int readStamp = 0;
 }
