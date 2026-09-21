@@ -190,6 +190,19 @@ String emitFragmentGlsl(
   if (material.engineInputs.contains('filtered_scene_color')) {
     sb.writeln('#define FLUTTER_SCENE_SKIP_SSAO');
   }
+  if (!lit &&
+      material.shadingModel != FmatShadingModel.shadowCatcher &&
+      !material.useEnvironment) {
+    // An unlit material that never samples the engine environment must not
+    // carry texture.glsl's RadianceLayoutInfo block. Nothing binds it (see
+    // PreprocessedMaterial.bind), and a fragment-stage uniform block that no
+    // draw writes is reflected at set 0 / binding 0, where it collides with
+    // the vertex stage's FrameInfo. GLES resolves uniforms per stage and
+    // ignores the clash; Vulkan builds one descriptor set layout for both
+    // stages, so the duplicate binding makes every draw with the material
+    // disappear.
+    sb.writeln('#define FLUTTER_SCENE_NO_ENGINE_RADIANCE');
+  }
   sb.writeln('#include <material_varyings.glsl>');
   sb.writeln('#include <pbr.glsl>');
   if (material.shadingModel != FmatShadingModel.shadowCatcher) {
