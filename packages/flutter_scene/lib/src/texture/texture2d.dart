@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import '../asset_helpers.dart';
 import '../gpu/gpu.dart' as gpu;
 import '../render/mip_sampling_probe.dart';
+import 'mip_upload_web.dart'
+    if (dart.library.io) 'mip_upload_native.dart';
 import 'mipmap.dart';
 
 /// Something a material can sample: it yields the GPU texture to sample for the
@@ -252,8 +254,6 @@ gpu.Texture uploadMipLevels(
     height,
     mipLevelCount: capped.length,
   );
-  for (var i = 0; i < capped.length; i++) {
-    texture.overwrite(ByteData.sublistView(capped[i].pixels), mipLevel: i);
-  }
+  uploadLevelsInto(texture, capped);
   return texture;
 }
