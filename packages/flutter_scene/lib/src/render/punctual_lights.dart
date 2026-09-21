@@ -122,6 +122,8 @@ class _TextureRing {
       _ring.fillRange(0, _size, null);
       _width = width;
       _height = height;
+      _lastContents = null;
+      _lastTexture = null;
     }
     _cursor = (_cursor + 1) % _size;
     return _ring[_cursor] ??= gpu.gpuContext.createTexture(
@@ -130,6 +132,41 @@ class _TextureRing {
       height,
       format: gpu.PixelFormat.r32g32b32a32Float,
     );
+  }
+
+  Float32List? _lastContents;
+  gpu.Texture? _lastTexture;
+
+  /// The texture holding [contents], uploading only when they changed.
+  ///
+  /// A scene whose lights sit still hands the same floats to the same ring
+  /// every frame. An upload is never free — on the backends that queue GPU work
+  /// from the calling thread it is a staging buffer, a blit pass and a
+  /// submission on the thread that draws, measured at up to 5 ms in one frame
+  /// on Impeller Vulkan for 5 KB of unchanged floats — so an unchanged frame
+  /// re-binds the texture it uploaded last time instead. That texture is out of
+  /// the ring's rotation while it is being reused, so nothing overwrites it in
+  /// flight.
+  gpu.Texture upload(Float32List contents, int width, int height) {
+    if (width == _width &&
+        height == _height &&
+        _lastTexture != null &&
+        _sameFloats(_lastContents!, contents)) {
+      return _lastTexture!;
+    }
+    final texture = acquire(width, height);
+    texture.overwrite(contents.buffer.asByteData());
+    _lastContents = Float32List.fromList(contents);
+    _lastTexture = texture;
+    return texture;
+  }
+
+  static bool _sameFloats(Float32List a, Float32List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }
 
@@ -220,8 +257,11 @@ class PunctualLightBuffer {
       return true;
     }());
 
-    final paramsTexture = _paramsRing.acquire(_texelsPerLight, count);
-    paramsTexture.overwrite(packed.params.buffer.asByteData());
+    final paramsTexture = _paramsRing.upload(
+      packed.params,
+      _texelsPerLight,
+      count,
+    );
 
     final spotCount = spotShadows?.matrices.length ?? 0;
 
@@ -248,8 +288,7 @@ class PunctualLightBuffer {
     for (var i = 0; i < indexLength; i++) {
       indexData[i * 4] = cull.indices[i].toDouble();
     }
-    final indexTexture = _indexRing.acquire(indexWidth, indexHeight);
-    indexTexture.overwrite(indexData.buffer.asByteData());
+    final indexTexture = _indexRing.upload(indexData, indexWidth, indexHeight);
 
     return PunctualLighting(
       paramsTexture: paramsTexture,
