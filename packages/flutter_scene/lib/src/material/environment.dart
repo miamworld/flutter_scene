@@ -181,6 +181,19 @@ base class EnvironmentMap {
     platformMipSamplingWorks: platformMipSamplingWorks,
   );
 
+  /// Whether the active Flutter GPU backend can render into and sample mip
+  /// levels. This is the backend capability alone, before the Android
+  /// mip-sampling probe: false on the native GLES backend, true on Vulkan,
+  /// Metal and the web.
+  ///
+  /// Exposed for host-app telemetry: paired with [mipRadianceLayoutSupported]
+  /// it separates the two devices that fall back to the band radiance layout —
+  /// a GLES backend (this is false) from a Vulkan device whose mip-sampling
+  /// probe failed on Adreno (this is true).
+  static bool get backendSupportsMips =>
+      gpu.gpuContext.doesSupportFramebufferRenderMipmap &&
+      gpu.gpuContext.doesSupportManuallyMippedTextures;
+
   /// Applies the backend capability and the measured Android mip sampling
   /// probe. Before the probe resolves, Android conservatively stays on the
   /// atlas so environments built early are never wrong.
